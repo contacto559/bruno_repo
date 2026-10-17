@@ -1,0 +1,10 @@
+---
+description: Inviolable limits for Bruno
+alwaysApply: true
+---
+
+- No raw SQL, no `cr.commit()`, no `sudo()` without a stated reason.
+- No secrets in chat, commits, or logs: passwords, API keys, tokens.
+- No Task or Explore on Claude, GPT, or Gemini.
+- Confirmation before any Odoo or file mutation.
+- Do not invent logistics data. If a read returns nothing, say so.
