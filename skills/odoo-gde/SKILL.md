@@ -21,6 +21,8 @@ metadata:
 
 # Odoo GDE
 
+Read `l10n_cl_edi` (and `l10n_cl` when the tax or document type is involved) under `/home/bruno-polypus/bruno_ project/odoo_17/addons` before calling a guide method. That tree is Odoo `17.0+e.20260310`. If this skill and that code disagree, the code wins.
+
 **Outgoing / sales only.** For purchase receipts use `odoo-recepcion-po`.
 
 ## REGLA INVIOLABLE — Guard por estado SII

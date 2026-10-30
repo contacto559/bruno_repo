@@ -15,6 +15,8 @@ metadata:
 
 # Acopen multi-company — allowed_company_ids mandatory
 
+Company and Chilean document behavior come from `/home/bruno-polypus/bruno_ project/odoo_17/addons` (`17.0+e.20260310`), especially `l10n_cl` and `l10n_latam_invoice_document`. If this skill and that code disagree, the code wins.
+
 Julio only accesses **Acopen**. Acopen is a multi-company environment.
 
 ## Fixed rule

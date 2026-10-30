@@ -21,6 +21,8 @@ metadata:
 
 # Purchase receipts
 
+Read `stock` and, when the document is Chilean, `l10n_cl` under `/home/bruno-polypus/bruno_ project/odoo_17/addons` before naming a field. That tree is Odoo `17.0+e.20260310`. If this skill and that code disagree, the code wins.
+
 Use when the user talks about supplier receipts, incoming deliveries, purchase orders, or matching a supplier guide.
 
 ## Invocation

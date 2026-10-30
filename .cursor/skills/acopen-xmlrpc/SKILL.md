@@ -8,6 +8,8 @@ description: >-
 
 # Acopen XML-RPC (Bruno)
 
+Before naming a field or a model, open it under `/home/bruno-polypus/bruno_ project/odoo_17/addons` (`17.0+e.20260310`). Chilean localization (`l10n_cl`, `l10n_cl_edi`, `l10n_cl_edi_boletas`, `l10n_latam_invoice_document`) wins over a guess.
+
 Read-only Acopen access. Credentials stay in the project `.env`. Never paste secrets.
 
 When interpreting models or Chilean documents (DTE, RUT, taxes), also check l10n_cl

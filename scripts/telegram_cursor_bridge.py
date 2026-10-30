@@ -91,6 +91,22 @@ LAST_AGENT: dict[int, str] = {}
 LAST_SEEN: dict[int, float] = {}
 # chat_id -> "agent" | "plan". Sticky until /new, /agent, or /plan without text.
 LAST_MODE: dict[int, str] = {}
+
+# ---------- Busy-state / pending-queue -----------------------------------
+# One run per chat. Text messages received while busy are queued (one slot).
+# Media messages cannot be queued (Telegram file IDs expire) → ask resend.
+_CHAT_BUSY: set[int] = set()
+_CHAT_PENDING: dict[int, dict] = {}
+_PENDING_ACK = (
+    "Lo anoto. En cuanto te responda lo proceso. "
+    "Si me mandas otro antes, reemplaza este."
+)
+_PENDING_REPLACE_ACK = "Reemplacé el anterior. Lo proceso cuando termine."
+_MEDIA_BUSY_REPLY = (
+    "Estoy con tu mensaje anterior. Cuando termine, mándame eso de nuevo."
+)
+# ---------- end busy-state -----------------------------------------------
+
 PLAN_PREFIX = (
     "This run is Cursor Plan mode. Explore and draft a plan only. "
     "Do not edit files, do not restart services, do not run destructive commands. "
@@ -440,6 +456,141 @@ def set_chat_mode(chat_id: int, mode: str) -> str:
     return value
 
 
+def _iso_timestamp(value: str) -> float | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def response_is_capacity(response: requests.Response) -> bool:
+    """Cursor sometimes returns 503 after the run was already created.
+
+    Forum (Oct 2026): Composer 2.5 peaks are retryable. The body we saw is
+    {"code":"unavailable","message":"Server at capacity"}.
+    """
+    if response.status_code != 503:
+        return False
+    body = (response.text or "").lower()
+    return "server at capacity" in body or "unavailable" in body
+
+
+def _cursor_get(api_key: str, path: str) -> dict | None:
+    try:
+        response = requests.get(
+            f"{API_BASE}{path}",
+            headers=cursor_headers(api_key),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        print(f"BRIDGE capacity lookup failed: {exc}", flush=True)
+        return None
+    if response.status_code >= 400:
+        return None
+    data = response.json()
+    return data if isinstance(data, dict) else None
+
+
+def adopt_run_after_capacity(
+    api_key: str,
+    *,
+    started: float,
+    machine_name: str = "",
+    agent_id: str | None = None,
+) -> dict | None:
+    """Return agent/run ids when a 503 still left a live run on the server."""
+    newest: tuple[float, str, str] | None = None
+
+    def consider(agent: dict) -> None:
+        nonlocal newest
+        aid = str(agent.get("id") or "")
+        run_id = str(agent.get("latestRunId") or "")
+        if not aid or not run_id:
+            return
+        env = agent.get("env") if isinstance(agent.get("env"), dict) else {}
+        if machine_name and env.get("name") and env.get("name") != machine_name:
+            return
+        stamp = _iso_timestamp(str(agent.get("updatedAt") or ""))
+        if stamp is None or stamp + 15 < started:
+            return
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, aid, run_id)
+
+    if agent_id:
+        agent = _cursor_get(api_key, f"/agents/{agent_id}")
+        if agent:
+            consider(agent.get("agent") if isinstance(agent.get("agent"), dict) else agent)
+    else:
+        page = _cursor_get(api_key, "/agents?limit=5")
+        items = []
+        if isinstance(page, dict):
+            raw = page.get("agents") or page.get("items") or []
+            if isinstance(raw, list):
+                items = raw
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("env"):
+                consider(item)
+                continue
+            full = _cursor_get(api_key, f"/agents/{item.get('id')}")
+            if isinstance(full, dict):
+                consider(full.get("agent") if isinstance(full.get("agent"), dict) else full)
+
+    if newest is None:
+        return None
+    _, aid, run_id = newest
+    print(f"BRIDGE adopted run after capacity response agent={aid} run={run_id}", flush=True)
+    return {"agent": {"id": aid, "latestRunId": run_id}, "run": {"id": run_id}}
+
+
+def post_or_adopt(
+    api_key: str,
+    url: str,
+    payload: dict,
+    *,
+    machine_name: str = "",
+    agent_id: str | None = None,
+) -> dict:
+    """POST a create/follow-up. On capacity 503, poll the run Cursor already started."""
+    started = time.time()
+    last_error = "capacity"
+    for attempt in range(3):
+        response = requests.post(
+            url,
+            headers=cursor_headers(api_key),
+            data=json.dumps(payload),
+            timeout=180,
+        )
+        if response.status_code < 400:
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+        last_error = f"HTTP {response.status_code}: {response.text[:800]}"
+        if not response_is_capacity(response):
+            break
+        print(
+            f"BRIDGE capacity attempt {attempt + 1}: {last_error[:180]}",
+            flush=True,
+        )
+        time.sleep(2)
+        adopted = adopt_run_after_capacity(
+            api_key,
+            started=started,
+            machine_name=machine_name,
+            agent_id=agent_id,
+        )
+        if adopted:
+            return adopted
+        if attempt < 2:
+            time.sleep(2 + attempt * 2)
+    raise RuntimeError(last_error)
+
+
 def create_agent(
     api_key: str,
     repo: str,
@@ -484,15 +635,13 @@ def create_agent(
         if env_vars:
             payload["envVars"] = env_vars
     # Creating a machine-backed agent can sit >60s if the worker is slow/offline.
-    response = requests.post(
+    # A 503 "Server at capacity" can still leave the run running; adopt it.
+    return post_or_adopt(
+        api_key,
         f"{API_BASE}/agents",
-        headers=cursor_headers(api_key),
-        data=json.dumps(payload),
-        timeout=180,
+        payload,
+        machine_name=machine_name if runtime == "machine" else "",
     )
-    if response.status_code >= 400:
-        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:800]}")
-    return response.json()
 
 
 def cursor_model_id() -> str:
@@ -522,19 +671,17 @@ def followup_agent(
         {"prompt": prompt},
     ]
     last_error = ""
+    url = f"{API_BASE}/agents/{agent_id}/runs"
     for payload in payloads:
-        response = requests.post(
-            f"{API_BASE}/agents/{agent_id}/runs",
-            headers=cursor_headers(api_key),
-            data=json.dumps(payload),
-            timeout=180,
-        )
-        if response.status_code < 400:
-            return response.json()
-        last_error = f"HTTP {response.status_code}: {response.text[:800]}"
-        if payload == {"prompt": prompt}:
-            break
-        print(f"BRIDGE followup rejected, retry leaner: {last_error[:200]}", flush=True)
+        try:
+            return post_or_adopt(api_key, url, payload, agent_id=agent_id)
+        except RuntimeError as exc:
+            last_error = str(exc)
+            if "server at capacity" in last_error.lower() or "unavailable" in last_error.lower():
+                raise
+            if payload == {"prompt": prompt}:
+                break
+            print(f"BRIDGE followup rejected, retry leaner: {last_error[:200]}", flush=True)
     raise RuntimeError(last_error or "followup failed")
 
 
@@ -581,16 +728,37 @@ async def wait_for_run_result(
     poll_seconds: float = 4.0,
     timeout_seconds: float = 3600.0,
 ) -> dict:
-    """Poll Cursor run; keep Telegram 'typing…' visible while waiting."""
+    """Poll Cursor run; keep Telegram 'typing…' visible while waiting.
+
+    Network errors during polling (ConnectionError, Timeout, HTTP 5xx after
+    retries) are logged but do not abort the loop — the agent keeps running in
+    Cursor and may finish while we wait. Only a hard timeout or a terminal
+    status ends the loop.
+    """
     deadline = time.monotonic() + timeout_seconds
     last: dict = {}
+    consecutive_poll_errors = 0
+    _MAX_POLL_ERRORS = 10  # ~40 s of failures before giving up
     beat = asyncio.create_task(_typing_heartbeat(bot, chat_id))
     try:
         while time.monotonic() < deadline:
-            last = await asyncio.to_thread(get_run, api_key, agent_id, run_id)
-            status = str(last.get("status") or "").upper()
-            if status in TERMINAL:
-                return last
+            try:
+                last = await asyncio.to_thread(get_run, api_key, agent_id, run_id)
+                consecutive_poll_errors = 0
+                status = str(last.get("status") or "").upper()
+                if status in TERMINAL:
+                    return last
+            except Exception as exc:  # noqa: BLE001
+                consecutive_poll_errors += 1
+                print(
+                    f"BRIDGE poll_error {consecutive_poll_errors}/{_MAX_POLL_ERRORS} "
+                    f"run={run_id[:8]} {exc.__class__.__name__}: {str(exc)[:120]}",
+                    flush=True,
+                )
+                if consecutive_poll_errors >= _MAX_POLL_ERRORS:
+                    raise RuntimeError(
+                        f"Cursor poll failed {_MAX_POLL_ERRORS} times in a row: {exc}"
+                    ) from exc
             await asyncio.sleep(min(poll_seconds, 4.0))
         raise TimeoutError(
             f"Run {run_id} still not terminal after {int(timeout_seconds)}s "
@@ -934,12 +1102,13 @@ async def _typing(bot, chat_id: int) -> None:
     """Telegram clears 'typing…' if the bot sends any message; only use chat actions while waiting."""
     try:
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"TYPING_ERROR chat={chat_id} {exc.__class__.__name__}: {exc}", flush=True)
 
 
 async def _typing_heartbeat(bot, chat_id: int, interval: float = 4.0) -> None:
     """Telegram drops the typing indicator after ~5s; refresh until cancelled."""
+    print(f"TYPING_START chat={chat_id}", flush=True)
     try:
         while True:
             await _typing(bot, chat_id)
@@ -961,12 +1130,234 @@ async def _run_blocking_with_typing(bot, chat_id: int, fn):
             pass
 
 
+# ---------- Busy-state helpers -------------------------------------------
+
+def _msg_sender(message) -> tuple[str | None, str | None, str | None]:
+    """Telegram date plus the person who sent the message."""
+    if message is None:
+        return None, None, None
+    msg_date = message.date.isoformat() if getattr(message, "date", None) else None
+    user = getattr(message, "from_user", None)
+    if user is None:
+        return msg_date, None, None
+    name = (user.full_name or "").strip() or None
+    username = (user.username or "").strip() or None
+    return msg_date, name, username
+
+
+def _extract_doc_path(text: str) -> str | None:
+    """Return first TELEGRAM_DOCUMENT path from a reply text, or None."""
+    match = TELEGRAM_DOC_LINE.search(text or "")
+    return match.group(1).strip() if match else None
+
+
+def _log_msg(
+    *,
+    direction: str,
+    chat_id: int,
+    user_id: int | None,
+    text: str,
+    message_id: int | None = None,
+    msg_date: str | None = None,
+    sender_name: str | None = None,
+    sender_username: str | None = None,
+    doc_path: str | None = None,
+    agent_id: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Append one JSON line to ROOT/data/messages.jsonl."""
+    entry = {
+        "ts": datetime.now().astimezone().isoformat(),
+        "direction": direction,
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "message_id": message_id,
+        "msg_date": msg_date,
+        "sender_name": sender_name,
+        "sender_username": sender_username,
+        "text": (text or "")[:5000],
+        "doc_path": doc_path,
+        "agent_id": agent_id,
+        "run_id": run_id,
+    }
+    log_path = ROOT / "data" / "messages.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(f"LOG_ERROR: {exc}", flush=True)
+
+
+def _claim_chat(chat_id: int) -> bool:
+    """True if this coroutine owns the chat. False = a run is already in flight."""
+    if chat_id in _CHAT_BUSY:
+        return False
+    _CHAT_BUSY.add(chat_id)
+    return True
+
+
+def _release_chat(chat_id: int) -> None:
+    _CHAT_BUSY.discard(chat_id)
+
+
+async def _queue_pending(
+    message,
+    chat_id: int,
+    text: str,
+    speaker_id: int | None,
+    mode: str,
+) -> None:
+    """Keep one text for this chat. A newer text replaces the previous one."""
+    replaced = chat_id in _CHAT_PENDING
+    msg_date, sender_name, sender_username = _msg_sender(message)
+    _CHAT_PENDING[chat_id] = {
+        "text": text,
+        "speaker_id": speaker_id,
+        "reply_msg_id": message.message_id,
+        "mode": mode,
+        "msg_date": msg_date,
+        "sender_name": sender_name,
+        "sender_username": sender_username,
+    }
+    print(f"BRIDGE queued chat={chat_id} replaced={replaced}", flush=True)
+    await message.reply_text(_PENDING_REPLACE_ACK if replaced else _PENDING_ACK)
+
+
+def _schedule_pending(chat_id: int, api_key: str, bot, context) -> None:
+    """Start the stored follow-up, if any. Caller must already have released the chat."""
+    pending = _CHAT_PENDING.pop(chat_id, None)
+    if not pending:
+        return
+    asyncio.create_task(
+        _send_pending(
+            chat_id=chat_id,
+            pending=pending,
+            api_key=api_key,
+            bot=bot,
+            context=context,
+        )
+    )
+
+
+class _Outbound:
+    """Minimal stand-in so reply_text_and_documents can answer a stored message id."""
+
+    def __init__(self, bot, chat_id: int, reply_to_message_id: int | None):
+        self._bot = bot
+        self._chat_id = chat_id
+        self._reply_to = reply_to_message_id
+
+    async def reply_text(self, text, **kwargs):
+        kwargs.pop("reply_to_message_id", None)
+        return await self._bot.send_message(
+            chat_id=self._chat_id,
+            text=text,
+            reply_to_message_id=self._reply_to,
+            **kwargs,
+        )
+
+    async def reply_document(self, **kwargs):
+        return await self._bot.send_document(
+            chat_id=self._chat_id,
+            reply_to_message_id=self._reply_to,
+            **kwargs,
+        )
+
+
+async def _send_pending(
+    *,
+    chat_id: int,
+    pending: dict,
+    api_key: str,
+    bot,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Fire one queued text as a follow-up once the previous run is done."""
+    if not _claim_chat(chat_id):
+        # Another run started already; keep this text unless a newer one landed.
+        _CHAT_PENDING.setdefault(chat_id, pending)
+        return
+    try:
+        prior = live_agent(chat_id)
+        text = pending["text"]
+        speaker_id = pending.get("speaker_id")
+        reply_msg_id = pending.get("reply_msg_id")
+        mode = pending.get("mode", "agent")
+        print(
+            f"BRIDGE pending_fire chat={chat_id} prior={'yes' if prior else 'no'}",
+            flush=True,
+        )
+        if prior:
+            data = await asyncio.to_thread(
+                followup_agent, api_key, prior, text, speaker_id, mode
+            )
+            if not extract_agent_id(data):
+                data = dict(data)
+                data["agent"] = {"id": prior}
+        else:
+            bd = context.application.bot_data
+            data = await asyncio.to_thread(
+                create_agent,
+                api_key,
+                bd["repo"],
+                bd["branch"],
+                text,
+                auto_create_pr=bd["auto_create_pr"],
+                runtime=bd["runtime"],
+                machine_name=bd["machine_name"],
+                telegram_user_id=speaker_id,
+                mode=mode,
+            )
+        agent_id = extract_agent_id(data)
+        run_id = extract_run_id(data)
+        if not agent_id or not run_id:
+            await bot.send_message(chat_id, "No pude procesar el mensaje pendiente.")
+            return
+        remember_agent(chat_id, agent_id)
+        run = await wait_for_run_result(
+            api_key,
+            agent_id,
+            run_id,
+            bot=bot,
+            chat_id=chat_id,
+        )
+        outbound = _Outbound(bot, chat_id, reply_msg_id)
+        final_text = format_reply(run, mode=mode, agent_id=agent_id)
+        _log_msg(
+            direction="outbound",
+            chat_id=chat_id,
+            user_id=pending.get("speaker_id"),
+            message_id=pending.get("reply_msg_id"),
+            msg_date=pending.get("msg_date"),
+            sender_name=pending.get("sender_name"),
+            sender_username=pending.get("sender_username"),
+            text=final_text,
+            doc_path=_extract_doc_path(final_text),
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+        await reply_text_and_documents(outbound, final_text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"BRIDGE pending_error chat={chat_id} {exc}", flush=True)
+        await bot.send_message(
+            chat_id,
+            "No pude procesar el mensaje que tenía guardado. Escríbemelo de nuevo.",
+        )
+    finally:
+        _release_chat(chat_id)
+        _schedule_pending(chat_id, api_key, bot, context)
+
+# ---------- end busy-state helpers ---------------------------------------
+
+
 async def run_and_reply(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     *,
     starter,
     mode: str = "agent",
+    pending_text: str | None = None,
 ) -> None:
     api_key: str = context.application.bot_data["cursor_api_key"]
     chat = update.effective_chat
@@ -975,6 +1366,20 @@ async def run_and_reply(
     chat_id = chat.id
     bot = context.bot
     run_mode = normalize_mode(mode)
+
+    # One run per chat. Text waits as a single follow-up. Media cannot be
+    # stored (Telegram file ids expire) so the user must send it again.
+    if not _claim_chat(chat_id):
+        if pending_text:
+            speaker_id = update.effective_user.id if update.effective_user else None
+            await _queue_pending(
+                update.message, chat_id, pending_text, speaker_id, run_mode
+            )
+        else:
+            print(f"BRIDGE busy chat={chat_id} media_resend", flush=True)
+            await update.message.reply_text(_MEDIA_BUSY_REPLY)
+        return
+
     # Do NOT send an intermediate text like "Trabajando…" — that clears typing in Telegram.
     try:
         # create_agent / followup can take tens of seconds; heartbeat covers that gap.
@@ -1000,10 +1405,22 @@ async def run_and_reply(
             timeout_seconds=run_timeout,
         )
         # First bot payload after the user message = final answer (+ optional PDFs).
-        await reply_text_and_documents(
-            update.message,
-            format_reply(run, mode=run_mode, agent_id=agent_id),
+        reply_text = format_reply(run, mode=run_mode, agent_id=agent_id)
+        msg_date, sender_name, sender_username = _msg_sender(update.message)
+        _log_msg(
+            direction="outbound",
+            chat_id=chat_id,
+            user_id=update.effective_user.id if update.effective_user else None,
+            message_id=update.message.message_id if update.message else None,
+            msg_date=msg_date,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            text=reply_text,
+            doc_path=_extract_doc_path(reply_text),
+            agent_id=agent_id,
+            run_id=run_id,
         )
+        await reply_text_and_documents(update.message, reply_text)
         # Default back to Agent after a Plan run (sticky Plan only for that turn).
         if run_mode == "plan":
             LAST_MODE.pop(chat_id, None)
@@ -1013,6 +1430,9 @@ async def run_and_reply(
         await update.message.reply_text(
             "No pude completar eso ahora. Escríbeme de nuevo en un rato."
         )
+    finally:
+        _release_chat(chat_id)
+        _schedule_pending(chat_id, api_key, bot, context)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1243,6 +1663,18 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             body,
             truncated,
         )
+        msg_date, sender_name, sender_username = _msg_sender(update.message)
+        _log_msg(
+            direction="inbound",
+            chat_id=chat.id if chat else 0,
+            user_id=update.effective_user.id if update.effective_user else None,
+            message_id=update.message.message_id,
+            msg_date=msg_date,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            text=note,
+            doc_path=str(dest),
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"BRIDGE_ERROR: inbound {exc}", flush=True)
         await update.message.reply_text(
@@ -1267,6 +1699,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         auto_create_pr=context.application.bot_data["auto_create_pr"],
         runtime=context.application.bot_data["runtime"],
         machine_name=context.application.bot_data["machine_name"],
+        queue_if_busy=False,  # file IDs expire; user must resend media
     )
 
 
@@ -1282,6 +1715,7 @@ async def _start_task(
     runtime: str,
     machine_name: str,
     mode: str | None = None,
+    queue_if_busy: bool = True,
 ) -> None:
     chat_id = update.effective_chat.id if update.effective_chat else 0
     speaker_id = update.effective_user.id if update.effective_user else None
@@ -1319,7 +1753,21 @@ async def _start_task(
         )
 
     print(f"BRIDGE mode={run_mode} chat={chat_id}", flush=True)
-    await run_and_reply(update, context, starter=starter, mode=run_mode)
+    msg_date, sender_name, sender_username = _msg_sender(update.message)
+    _log_msg(
+        direction="inbound",
+        chat_id=chat_id,
+        user_id=speaker_id,
+        message_id=update.message.message_id if update.message else None,
+        msg_date=msg_date,
+        sender_name=sender_name,
+        sender_username=sender_username,
+        text=text,
+    )
+    await run_and_reply(
+        update, context, starter=starter, mode=run_mode,
+        pending_text=text if queue_if_busy else None,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1387,6 +1835,7 @@ def main() -> None:
         .write_timeout(60.0)
         .media_write_timeout(DOC_WRITE_TIMEOUT)
         .pool_timeout(10.0)
+        .concurrent_updates(True)
         .build()
     )
     app.bot_data["allowed_user_id"] = allowed_user_id

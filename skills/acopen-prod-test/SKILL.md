@@ -19,6 +19,8 @@ metadata:
 
 # Acopen production ↔ test
 
+Odoo behavior, including Chilean localization, is the tree at `/home/bruno-polypus/bruno_ project/odoo_17/addons` (`17.0+e.20260310`). Read the module before a write. If this skill and that code disagree, the code wins.
+
 Julio only accesses Acopen. This skill defines how to switch between production and test.
 
 The credential source for deployed runtime use is **`/root/.openclaw_julio/.env`** (Julio state, same pattern as Sofia’s state `.env`); this skill only consumes the environment variables loaded from there.

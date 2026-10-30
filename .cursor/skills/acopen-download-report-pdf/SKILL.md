@@ -10,6 +10,8 @@ description: >-
 
 # Acopen — download QWeb PDF (Bruno)
 
+Report and Chilean document models live in `/home/bruno-polypus/bruno_ project/odoo_17/addons` (`17.0+e.20260310`). Read `l10n_cl_edi` before assuming a DTE PDF.
+
 Read-only PDF download. Credentials from the project `.env`. Profile `ACOPEN`.
 
 ## When
