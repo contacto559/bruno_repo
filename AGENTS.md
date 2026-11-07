@@ -23,9 +23,12 @@ Chilean localization is mandatory on taxes, invoices, boletas, RUT, CAF, DTE, th
 
 ## Acopen
 
-- Connection is XML-RPC with `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_PASSWORD` from this workspace `.env`. Test uses `ODOO_ACOPEN_USE_TEST=1` and `ODOO_ACOPEN_TEST_*`.
-- Those variables are not on this machine yet. If they are missing, say Acopen credentials are not configured and stop. Do not invent them.
+- Connection is XML-RPC. Production: `ODOO_URL`/`ODOO_DB`/`ODOO_USER`/`ODOO_PASSWORD` (GDE/recepción) and `ODOO_ACOPEN_*` (CLI). Both point to Main. Test: `ODOO_ACOPEN_USE_TEST=1` + `ODOO_ACOPEN_TEST_*`.
+- **Per-speaker credentials** (see `docs/PER_SPEAKER_ODOO.md`): prepend `ODOO_SPEAKER_ID=<telegram_id>` on every Odoo script. Warehouse speakers authenticate as themselves so native Odoo record rules apply. JR (`684058204`) uses `admin@acomin.cl` + API key. Juan Romero (`9059457598`) uses `jromero@pentagon.cl`. Sebastián (`6290405799`) uses `sbriones@acomin.cl`. Never paste keys.
+- If Acopen is unreachable or credentials fail: reply «Ahora no puedo consultar los despachos. Avisa a JR.» Do not expose `.env`, URL, DB, user, or key names.
 - Multi-company: always `allowed_company_ids`. Add `company_id` when the action is company-specific. Names: PENTAGON, ACOMIN, NOVATEX. Say the name.
+- **Warehouse speakers (Juan Romero, Sebastián Briones, Marco Jara): PENTAGON only** — `company_id=1`, `allowed_company_ids=[1]`. Do not ask which company; do not list ACOMIN or NOVATEX records.
+- IT speakers (JR, Matías, Israel): all three companies.
 - If the environment was not stated, ask production or test before a write. Keep the answer for the session.
 - Browser links use the Acopen base URL plus `/web#id={id}&model={model}&view_type=form`. The base URL is not a secret. Passwords are.
 

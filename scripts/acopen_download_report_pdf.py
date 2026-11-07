@@ -233,7 +233,8 @@ def copy_outbound(src: Path, filename: str) -> Path:
 
 def cmd_download(args: argparse.Namespace) -> int:
     file_vals = parse_env_file(Path(args.env_file).resolve())
-    cfg = resolve_profile(args.profile, file_vals)
+    speaker_id = getattr(args, "speaker_id", "") or os.environ.get("ODOO_SPEAKER_ID", "")
+    cfg = resolve_profile(args.profile, file_vals, speaker_id=speaker_id)
     uid, models = rpc_auth(cfg["url"], cfg["db"], cfg["user"], cfg["password"])
     res_ids = resolve_record_ids(
         models,
@@ -355,6 +356,7 @@ def main() -> int:
     d.add_argument("-o", "--output", default=None)
     d.add_argument("--deliver-filename", default=None)
     d.add_argument("--deliver-caption", default=None)
+    d.add_argument("--speaker-id", default="")
     args = p.parse_args()
     if args.cmd != "download":
         return 2

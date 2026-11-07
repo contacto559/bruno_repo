@@ -4,3 +4,23 @@ __pycache__/
 *.pyc
 odoo_17/
 acopen/
+# --- panel sync: secrets, nested repos, media; keep agent messages ---
+.env
+.env.*
+!.env.example
+odoo/
+odoo_17/
+odoo17_addons/
+acopen/
+acopen_core/
+polypus/
+polypus_core/
+media/inbound/*
+media/outbound/*
+!media/inbound/.gitkeep
+!media/outbound/.gitkeep
+data/*
+!data/.gitkeep
+!data/messages.jsonl
+data/pw/
+# --- end panel sync ---

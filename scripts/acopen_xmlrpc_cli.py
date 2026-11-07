@@ -47,11 +47,13 @@ def env_get(key: str, file_vals: dict[str, str]) -> str:
     return (os.environ.get(key) or file_vals.get(key) or "").strip()
 
 
-def resolve_profile(profile: str, file_vals: dict[str, str]) -> dict[str, str]:
+def resolve_profile(
+    profile: str, file_vals: dict[str, str], speaker_id: str | None = None
+) -> dict[str, str]:
     name = (profile or "ACOPEN").strip().upper().replace("-", "_")
     if name == "ACOPEN_TEST":
         raise ValueError(
-            "ACOPEN_TEST is not configured on Sylvia. Use --profile ACOPEN (read-only)."
+            "ACOPEN_TEST is not configured on Bruno. Use --profile ACOPEN (read-only)."
         )
     if name not in PROFILES:
         raise ValueError(f"Unsupported profile {profile!r}; use ACOPEN")
@@ -61,6 +63,18 @@ def resolve_profile(profile: str, file_vals: dict[str, str]) -> dict[str, str]:
     password = env_get(f"ODOO_{name}_PASSWORD", file_vals) or env_get(
         f"ODOO_{name}_PASS", file_vals
     )
+    # Per-speaker credential override (applied when --speaker-id is set or
+    # ODOO_SPEAKER_ID is in the environment).
+    sid = (speaker_id or os.environ.get("ODOO_SPEAKER_ID") or "").strip()
+    if sid:
+        sp_user = env_get(f"ODOO_{name}_USER_{sid}", file_vals)
+        sp_pwd = env_get(f"ODOO_{name}_APIKEY_{sid}", file_vals) or env_get(
+            f"ODOO_{name}_PASSWORD_{sid}", file_vals
+        )
+        if sp_user:
+            user = sp_user
+        if sp_pwd:
+            password = sp_pwd
     missing = [
         k
         for k, v in (
@@ -258,7 +272,12 @@ def _common_args() -> argparse.ArgumentParser:
     c.add_argument(
         "--profile",
         default="ACOPEN",
-        help="ACOPEN (Main, read-only). ACOPEN_TEST is not configured.",
+        help="ACOPEN (Main, read-only). ACOPEN_TEST not configured on Bruno.",
+    )
+    c.add_argument(
+        "--speaker-id",
+        default="",
+        help="Telegram user id of the caller; selects per-speaker credentials when set.",
     )
     c.add_argument("--timeout-seconds", type=float, default=30.0)
     return c
@@ -301,7 +320,7 @@ def main() -> int:
     socket.setdefaulttimeout(args.timeout_seconds)
     try:
         file_vals = parse_env_file(args.env_file.resolve())
-        cfg = resolve_profile(args.profile, file_vals)
+        cfg = resolve_profile(args.profile, file_vals, speaker_id=args.speaker_id)
         if args.command == "version":
             return cmd_version(cfg)
         if args.command == "auth":

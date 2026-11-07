@@ -12,19 +12,20 @@ import sys
 import xmlrpc.client
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from shared.acopen_rpc import execute_kw, get_connection
+from shared.acopen_rpc import execute_kw, get_connection, get_company_context
 
 
-def resolve_picking(db, uid, password, object_, picking_ref):
+def resolve_picking(db, uid, password, object_, picking_ref, company_ctx=None):
+    ctx_kw = {"context": company_ctx} if company_ctx else {}
     try:
         pid = int(picking_ref)
-        ids = execute_kw(object_, db, uid, password, "stock.picking", "search", [[["id", "=", pid]]], {"limit": 1})
+        ids = execute_kw(object_, db, uid, password, "stock.picking", "search", [[["id", "=", pid]]], {"limit": 1, **ctx_kw})
         if ids:
             return ids[0]
         raise SystemExit(f"Error: no se encontro picking con ID {picking_ref}")
     except ValueError:
         pass
-    ids = execute_kw(object_, db, uid, password, "stock.picking", "search", [[["name", "=", picking_ref]]], {"limit": 1})
+    ids = execute_kw(object_, db, uid, password, "stock.picking", "search", [[["name", "=", picking_ref]]], {"limit": 1, **ctx_kw})
     if not ids:
         raise SystemExit(f"Error: no se encontro picking con nombre '{picking_ref}'")
     return ids[0]
@@ -33,12 +34,17 @@ def resolve_picking(db, uid, password, object_, picking_ref):
 GUARD_STATUSES = ("accepted", "objected")
 
 
-def run_create(db, uid, password, object_, picking_id, json_out):
+def _ctx(company_ctx):
+    """Return kw dict fragment for execute_kw context, or {} if no company restriction."""
+    return {"context": company_ctx} if company_ctx else {}
+
+
+def run_create(db, uid, password, object_, picking_id, json_out, company_ctx=None):
     # GUARD INVIOLABLE: leer l10n_cl_dte_status antes de ejecutar create_delivery_guide.
     # Si la guía ya está aceptada u objetada, ejecutarla la destruye (resetea estado,
     # borra el DTE firmado y adjuntos legales). El resultado es una guía rechazada.
     rows = execute_kw(object_, db, uid, password, "stock.picking", "read",
-                      [[picking_id]], {"fields": ["name", "l10n_cl_dte_status", "l10n_latam_document_number"]})
+                      [[picking_id]], {"fields": ["name", "l10n_cl_dte_status", "l10n_latam_document_number"], **_ctx(company_ctx)})
     if not rows:
         raise SystemExit(f"Error: picking id={picking_id} no encontrado.")
     pk = rows[0]
@@ -54,27 +60,27 @@ def run_create(db, uid, password, object_, picking_id, json_out):
                           "l10n_cl_dte_status": dte_status,
                           "picking_id": picking_id, "error": msg}) if json_out else msg)
         sys.exit(2)
-    execute_kw(object_, db, uid, password, "stock.picking", "create_delivery_guide", [[picking_id]])
+    execute_kw(object_, db, uid, password, "stock.picking", "create_delivery_guide", [[picking_id]], _ctx(company_ctx))
     print(json.dumps({"ok": True, "picking_id": picking_id, "action": "create_delivery_guide"}) if json_out else "Guia de despacho creada correctamente.")
 
 
-def run_send(db, uid, password, object_, picking_id, json_out):
-    execute_kw(object_, db, uid, password, "stock.picking", "l10n_cl_send_dte_to_sii", [[picking_id]], {"retry_send": True})
+def run_send(db, uid, password, object_, picking_id, json_out, company_ctx=None):
+    execute_kw(object_, db, uid, password, "stock.picking", "l10n_cl_send_dte_to_sii", [[picking_id]], {"retry_send": True, **_ctx(company_ctx)})
     print(json.dumps({"ok": True, "picking_id": picking_id, "action": "l10n_cl_send_dte_to_sii"}) if json_out else "DTE enviado al SII correctamente.")
 
 
-def run_verify(db, uid, password, object_, picking_id, json_out, send_to_partner):
-    execute_kw(object_, db, uid, password, "stock.picking", "l10n_cl_verify_dte_status", [[picking_id]], {"send_dte_to_partner": send_to_partner})
+def run_verify(db, uid, password, object_, picking_id, json_out, send_to_partner, company_ctx=None):
+    execute_kw(object_, db, uid, password, "stock.picking", "l10n_cl_verify_dte_status", [[picking_id]], {"send_dte_to_partner": send_to_partner, **_ctx(company_ctx)})
     print(json.dumps({"ok": True, "picking_id": picking_id, "action": "l10n_cl_verify_dte_status"}) if json_out else "Estado en SII consultado y actualizado.")
 
 
-def run_print(db, uid, password, object_, picking_id, json_out):
-    execute_kw(object_, db, uid, password, "stock.picking", "print_delivery_guide_pdf", [[picking_id]])
+def run_print(db, uid, password, object_, picking_id, json_out, company_ctx=None):
+    execute_kw(object_, db, uid, password, "stock.picking", "print_delivery_guide_pdf", [[picking_id]], _ctx(company_ctx))
     print(json.dumps({"ok": True, "picking_id": picking_id, "action": "print_delivery_guide_pdf"}) if json_out else "Solicitud de impresion de la guia enviada.")
 
 
-def run_status(db, uid, password, object_, picking_id, json_out):
-    rows = execute_kw(object_, db, uid, password, "stock.picking", "read", [[picking_id]], {"fields": ["name", "state", "l10n_latam_document_number", "l10n_cl_dte_status", "l10n_cl_dte_partner_status"]})
+def run_status(db, uid, password, object_, picking_id, json_out, company_ctx=None):
+    rows = execute_kw(object_, db, uid, password, "stock.picking", "read", [[picking_id]], {"fields": ["name", "state", "l10n_latam_document_number", "l10n_cl_dte_status", "l10n_cl_dte_partner_status"], **_ctx(company_ctx)})
     if not rows:
         raise SystemExit("Error: picking no encontrado")
     r = rows[0]
@@ -98,19 +104,20 @@ def main():
         return 1
 
     db, uid, password, object_ = get_connection()
-    picking_id = resolve_picking(db, uid, password, object_, args.picking)
+    company_ctx = get_company_context()  # {} for IT, {'company_id':1,'allowed_company_ids':[1]} for warehouse
+    picking_id = resolve_picking(db, uid, password, object_, args.picking, company_ctx)
 
     try:
         if args.operation == "create":
-            run_create(db, uid, password, object_, picking_id, args.json)
+            run_create(db, uid, password, object_, picking_id, args.json, company_ctx)
         elif args.operation == "send":
-            run_send(db, uid, password, object_, picking_id, args.json)
+            run_send(db, uid, password, object_, picking_id, args.json, company_ctx)
         elif args.operation == "verify":
-            run_verify(db, uid, password, object_, picking_id, args.json, args.send_to_partner)
+            run_verify(db, uid, password, object_, picking_id, args.json, args.send_to_partner, company_ctx)
         elif args.operation == "print":
-            run_print(db, uid, password, object_, picking_id, args.json)
+            run_print(db, uid, password, object_, picking_id, args.json, company_ctx)
         elif args.operation == "status":
-            run_status(db, uid, password, object_, picking_id, args.json)
+            run_status(db, uid, password, object_, picking_id, args.json, company_ctx)
     except xmlrpc.client.Fault as e:
         msg = e.faultString or str(e)
         print(json.dumps({"ok": False, "error": msg}) if args.json else f"Error Odoo: {msg}")

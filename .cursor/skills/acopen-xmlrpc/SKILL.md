@@ -8,7 +8,7 @@ description: >-
 
 # Acopen XML-RPC (Bruno)
 
-Before naming a field or a model, open it under `/home/bruno-polypus/bruno_ project/odoo_17/addons` (`17.0+e.20260310`). Chilean localization (`l10n_cl`, `l10n_cl_edi`, `l10n_cl_edi_boletas`, `l10n_latam_invoice_document`) wins over a guess.
+Before naming a field or a model, open it under `/home/bruno-polypus/bruno_project/odoo_17/addons` (`17.0+e.20260310`). Chilean localization (`l10n_cl`, `l10n_cl_edi`, `l10n_cl_edi_boletas`, `l10n_latam_invoice_document`) wins over a guess.
 
 Read-only Acopen access. Credentials stay in the project `.env`. Never paste secrets.
 
@@ -56,13 +56,13 @@ CLI="$HOME/repos/bruno_repo/scripts/acopen_xmlrpc_cli.py"
   --limit 10
 ```
 
-ACOMIN (`company_id` 2):
+PENTAGON (`company_id` 1):
 
 ```bash
 "$PY" "$CLI" search_read --profile ACOPEN \
   --model stock.picking \
-  --domain-json '[["company_id","=",2],["state","=","assigned"]]' \
-  --context-json '{"allowed_company_ids":[2],"company_id":2}' \
+  --domain-json '[["company_id","=",1],["state","=","assigned"]]' \
+  --context-json '{"allowed_company_ids":[1],"company_id":1}' \
   --fields id,name,partner_id,state,scheduled_date \
   --limit 10
 ```
