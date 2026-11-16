@@ -24,5 +24,8 @@ data/*
 !data/messages.jsonl
 !memories/
 !memories/**
+__pycache__/
+*.pyc
+*.py.bak
 data/pw/
 # --- end panel sync ---
