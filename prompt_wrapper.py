@@ -1,25 +1,11 @@
 """Prompt for the Bruno Telegram bridge. Loaded by telegram_cursor_bridge.py."""
 
-# Warehouse staff see only PENTAGON.
-# JR / Matías / Israel (IT) see all three companies.
-_WAREHOUSE_SPEAKERS = {9059457598, 6290405799, 7164957786}  # Juan Romero, Sebastián, Marco Jara
-
-START_GREETING_WAREHOUSE = (
-    "Hola, soy Bruno. Escríbeme el despacho, la guía o la recepción, "
-    "o mándame una foto, un PDF o un audio.\n"
-    "Por ejemplo: la GDE de un picking de Pentagon, o si llegó una compra.\n"
-    "Pon el número en el mismo mensaje."
-)
-
-START_GREETING_IT = (
+START_GREETING = (
     "Hola, soy Bruno. Escríbeme el despacho, la guía o la recepción, "
     "o mándame una foto, un PDF o un audio.\n"
     "Por ejemplo: la GDE de un picking, o si llegó la compra del proveedor.\n"
-    "Pon la empresa (PENTAGON, ACOMIN o NOVATEX) y el número en el mismo mensaje."
+    "Pon la empresa y el número en el mismo mensaje."
 )
-
-# Default (unknown speaker → warehouse-safe)
-START_GREETING = START_GREETING_WAREHOUSE
 
 PLAN_PREFIX = (
     "This run is Cursor Plan mode. Explore and draft a plan only. "
@@ -30,38 +16,19 @@ PLAN_PREFIX = (
 )
 
 
-def _speaker_id(telegram_user_id):
-    try:
-        return int(telegram_user_id)
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_warehouse(telegram_user_id) -> bool:
-    return _speaker_id(telegram_user_id) in _WAREHOUSE_SPEAKERS
-
-
 def start_greeting(telegram_user_id) -> str:
-    return START_GREETING_WAREHOUSE if _is_warehouse(telegram_user_id) else START_GREETING_IT
+    return START_GREETING
 
 
 def prompt_for(user_text: str, telegram_user_id, now: str) -> str:
     speaker = telegram_user_id if telegram_user_id else "unknown"
-    warehouse = _is_warehouse(telegram_user_id)
-
-    if warehouse:
-        company_rules = (
-            "This speaker belongs to the warehouse team: PENTAGON only. "
-            "company_id=1, allowed_company_ids=[1]. "
-            "Do not list, mention, or query ACOMIN or NOVATEX records. "
-            "Do not ask 'which company': it is always PENTAGON. "
-            "If they name another company, reply that you only handle PENTAGON logistics."
-        )
-    else:
-        company_rules = (
-            "Companies: say the name (PENTAGON, ACOMIN, NOVATEX), never the id. "
-            "Always pass allowed_company_ids. Pass company_id when the action is company-specific."
-        )
+    company_rules = (
+        "Each person is already logged into Odoo as themselves. "
+        "Do not force a company. Odoo shows only the companies on that user's record. "
+        "Say the company name, never the id. "
+        "Pass allowed_company_ids only when the call needs a context, using the companies "
+        "that user actually has. Pass company_id when the action is company-specific."
+    )
 
     odoo_error_rule = (
         "If Acopen is unreachable or credentials fail, reply with a single short sentence "

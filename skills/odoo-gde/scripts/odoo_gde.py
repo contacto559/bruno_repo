@@ -104,7 +104,7 @@ def main():
         return 1
 
     db, uid, password, object_ = get_connection()
-    company_ctx = get_company_context()  # {} for IT, {'company_id':1,'allowed_company_ids':[1]} for warehouse
+    company_ctx = get_company_context()
     picking_id = resolve_picking(db, uid, password, object_, args.picking, company_ctx)
 
     try:

@@ -11,9 +11,9 @@ JR no es Juan Romero. JR (`684058204`) es IT / administrador. Juan Romero
 
 | Telegram id | Persona | Odoo login | Env vars | Rol |
 |-------------|---------|------------|----------|-----|
-| `684058204` | JR | `admin@acomin.cl` | `ODOO_ACOPEN_USER_684058204` + `ODOO_ACOPEN_APIKEY_684058204` | Admin, tres empresas |
-| `9059457598` | Juan Romero | `jromero@pentagon.cl` | `ODOO_ACOPEN_USER_9059457598` + `ODOO_ACOPEN_APIKEY_9059457598` | Bodega, solo Pentagon |
-| `6290405799` | Sebastián Briones | `sbriones@acomin.cl` | `ODOO_ACOPEN_USER_6290405799` + `ODOO_ACOPEN_APIKEY_6290405799` | Bodega, solo Pentagon |
+| `684058204` | JR | `admin@acomin.cl` | `ODOO_ACOPEN_USER_684058204` + `ODOO_ACOPEN_APIKEY_684058204` | Admin; empresas de su ficha |
+| `9059457598` | Juan Romero | `jromero@pentagon.cl` | `ODOO_ACOPEN_USER_9059457598` + `ODOO_ACOPEN_APIKEY_9059457598` | Bodega; PENTAGON y ACOMIN |
+| `6290405799` | Sebastián Briones | `sbriones@acomin.cl` | `ODOO_ACOPEN_USER_6290405799` + `ODOO_ACOPEN_APIKEY_6290405799` | Bodega; solo ACOMIN |
 | otros (Matías, Israel, Marco) | IT / fallback | `ODOO_ACOPEN_USER` | `ODOO_ACOPEN_PASSWORD` | Admin (fallback) |
 
 Las keys viven solo en `.env` (gitignored). No se commitean ni se pegan en chat.
@@ -21,16 +21,30 @@ Las keys viven solo en `.env` (gitignored). No se commitean ni se pegan en chat.
 ## Cómo se resuelven
 
 1. El bridge inyecta el Telegram user id en el prompt (`prompt_wrapper.py`).
-2. El agente prepende `ODOO_SPEAKER_ID=<id>` a cada script Odoo.
+2. El agente ejecuta **una sola vez** al inicio de la sesión:
+   ```bash
+   export ODOO_SPEAKER_ID=<id>
+   ```
+   Esto propaga el id a todos los subprocesos sin que el agente deba recordarlo
+   en cada línea.
 3. `scripts/acopen_xmlrpc_cli.py` (`--speaker-id` o `ODOO_SPEAKER_ID`) y
    `skills/shared/acopen_rpc.py` leen:
    - `ODOO_ACOPEN_USER_<id>`
    - `ODOO_ACOPEN_APIKEY_<id>` (o `ODOO_ACOPEN_PASSWORD_<id>`)
-4. Si no hay override, caen a `ODOO_ACOPEN_USER` / `ODOO_ACOPEN_PASSWORD`.
+4. Si no hay override, caen a `ODOO_ACOPEN_USER` / `ODOO_ACOPEN_PASSWORD`
+   (global `lelouchvibritannia@gmail.com`, solo lectura básica).
 5. `scripts/acopen_download_report_pdf.py` también acepta `--speaker-id`.
 
 Skills GDE y recepción (`odoo-gde`, `odoo-recepcion-po`) usan
 `skills/shared/acopen_rpc.py`, así que heredan el mismo mapa.
+
+### Contexto de empresa (multicompañía)
+
+`get_company_context()` devuelve `{}`. No fuerza PENTAGON. Odoo aplica las compañías del usuario que autenticó:
+
+- `sbriones@acomin.cl`: solo ACOMIN.
+- `jromero@pentagon.cl`: PENTAGON y ACOMIN.
+- `admin@acomin.cl`: las compañías de esa ficha.
 
 ## Cómo se generan las keys
 
@@ -49,15 +63,23 @@ en el override per-speaker). El fallback global del `.env` sigue siendo
 ## Prueba (host Bruno)
 
 ```bash
-cd ~/repos/bruno_repo
-ODOO_SPEAKER_ID=684058204 python3 scripts/acopen_xmlrpc_cli.py auth
-# uid admin (admin@acomin.cl)
+cd ~/bruno_project
 
-ODOO_SPEAKER_ID=9059457598 python3 scripts/acopen_xmlrpc_cli.py auth
-# uid 106, jromero@pentagon.cl
+# Verificación completa con auth real:
+export ODOO_SPEAKER_ID=684058204
+python3 skills/acopen-prod-test/scripts/acopen_env_check.py
+# → Acopen producción — OK / Usuario de sesión: admin@acomin.cl / UID: 2
 
-ODOO_SPEAKER_ID=6290405799 python3 scripts/acopen_xmlrpc_cli.py auth
-# uid 94, sbriones@acomin.cl
+export ODOO_SPEAKER_ID=9059457598
+python3 skills/acopen-prod-test/scripts/acopen_env_check.py
+# → Acopen producción — OK / Usuario de sesión: jromero@pentagon.cl / UID: 106
+
+export ODOO_SPEAKER_ID=6290405799
+python3 skills/acopen-prod-test/scripts/acopen_env_check.py
+# → Acopen producción — OK / Usuario de sesión: sbriones@acomin.cl / UID: 94
+
+# O via acopen_xmlrpc_cli.py:
+python3 scripts/acopen_xmlrpc_cli.py --profile Main auth
 ```
 
 Nunca imprimir la key ni el password.

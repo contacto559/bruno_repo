@@ -8,9 +8,8 @@ Credential resolution order per call (first non-empty wins):
   3. ODOO_ACOPEN_USER / ODOO_ACOPEN_PASSWORD  (canonical block in .env)
 
 Company context:
-  Warehouse speakers authenticate as themselves; Odoo native rules apply.
-  Additionally, get_company_context(speaker_id) returns the explicit
-  {company_id, allowed_company_ids} dict to pass in every execute_kw context.
+  Each speaker authenticates as themselves. get_company_context() returns {}
+  so Odoo applies that user's own companies. Do not force a company.
 
 Never prints passwords or secrets.
 """
@@ -23,12 +22,6 @@ from pathlib import Path
 # skills/shared/acopen_rpc.py → parents[0]=shared, [1]=skills, [2]=bruno_repo root
 ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = ROOT / ".env"
-
-# Warehouse speakers — PENTAGON (company_id=1) only.
-# IT speakers use their own Odoo company assignments (no override).
-_WAREHOUSE_SPEAKERS: frozenset[int] = frozenset({9059457598, 6290405799, 7164957786})
-_PENTAGON_CTX: dict = {"company_id": 1, "allowed_company_ids": [1]}
-
 
 def _parse_env(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -96,19 +89,8 @@ def get_connection():
 
 
 def get_company_context(speaker_id: str | int | None = None) -> dict:
-    """Return the Odoo company context dict for execute_kw calls.
-
-    Warehouse speakers: {'company_id': 1, 'allowed_company_ids': [1]} (PENTAGON only).
-    IT / admin speakers: {} (no override; Odoo applies the user's own companies).
-    Pass the returned dict as the 'context' key inside execute_kw kwargs.
-    """
-    if speaker_id is None:
-        speaker_id = os.environ.get("ODOO_SPEAKER_ID", "")
-    try:
-        sid = int(speaker_id or 0)
-    except (TypeError, ValueError):
-        sid = 0
-    return dict(_PENTAGON_CTX) if sid in _WAREHOUSE_SPEAKERS else {}
+    """Return empty dict; Odoo applies the authenticated user's companies."""
+    return {}
 
 
 def execute_kw(models, db, uid, password, model, method, args, kw=None):

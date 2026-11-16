@@ -125,7 +125,7 @@ def main():
 
     args = parser.parse_args()
     db, uid, password, object_ = get_connection()
-    company_ctx = get_company_context()  # {} for IT, {'company_id':1,'allowed_company_ids':[1]} for warehouse
+    company_ctx = get_company_context()
 
     if args.cmd == "validate" and not args.yes:
         print("Refused: add --yes to confirm receipt validation.")
